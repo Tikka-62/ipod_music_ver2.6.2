@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="MusicPlayer">
-  <title>Music Player</title>
+  <meta name="apple-mobile-web-app-title" content="Tiramisu">
+  <title>Tiramisu</title>
   
   <link rel="icon" href="icon.png">
   <link rel="apple-touch-icon" href="icon.png">
@@ -111,7 +111,8 @@
     .header-bar { display: flex; justify-content: space-between; align-items: center; padding-top: 20px; padding-bottom: 15px; margin-bottom: 10px; }
     
     #library .header-bar,
-    #playlist .header-bar {
+    #playlist .header-bar,
+    #deleteScreen .header-bar {
       position: -webkit-sticky;
       position: sticky;
       top: 0;
@@ -137,8 +138,19 @@
     .tab.active { color: var(--accent-color); }
     .tab svg { width: 28px; height: 28px; }
 
-    .song-item { display: flex; justify-content: space-between; align-items: center; padding: 15px 10px; border-bottom: 1px solid var(--item-border); cursor: pointer; font-size: 16px; }
+    .song-item { 
+      display: flex; justify-content: space-between; align-items: center; 
+      padding: 0 10px; height: 55px; box-sizing: border-box; 
+      border-bottom: 1px solid var(--item-border); cursor: pointer; font-size: 16px; 
+    }
     .song-item:active { background: var(--item-border); }
+    .song-item span.song-name {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
+      padding-right: 10px;
+    }
 
     #miniPlayer { position: fixed; bottom: calc(60px + env(safe-area-inset-bottom)); width: 100%; background: var(--overlay-bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-top: 1px solid var(--glass-border); box-shadow: var(--glass-shadow); padding: 10px 20px 2px; box-sizing: border-box; z-index: 10; display: none; transition: background 0.3s; }
 
@@ -375,7 +387,7 @@
       <div class="color-picker" id="colorPicker"></div>
     </div>
 
-    <div class="version">ver2.6.2</div>
+    <div class="version">ver2.6.4 (Swipe Optimized)</div>
   </div>
 
   <div id="deleteScreen" class="screen">
@@ -386,7 +398,9 @@
       <h2>曲の選択削除</h2>
     </div>
     <div id="deleteSongList"></div>
-    <button id="executeDeleteBtn" class="action-btn" style="width: 100%; margin-top: 20px; background: #ff3b30; color: #fff;">選択した曲を削除</button>
+    <div style="padding-top: 20px;">
+      <button id="executeDeleteBtn" class="action-btn" style="width: 100%; background: #ff3b30; color: #fff;">選択した曲を削除</button>
+    </div>
   </div>
 
   <div id="miniPlayer">
@@ -604,6 +618,10 @@
     var nextIndex2 = -1;
     var isShuffle = false;
     var isRepeat = false;
+
+    // スワイプ時のメモリパンクを防ぐためのタイマー管理
+    var playDebounceTimer = null;
+    var currentPlayId = 0;
     
     var playPauseBtn = document.getElementById('playPauseBtn');
     var shuffleBtn = document.getElementById('shuffleBtn');
@@ -623,38 +641,60 @@
       displaySongs();
     };
 
-    function renderListInChunks(items, containerEl, getElementFn) {
-      containerEl.innerHTML = '';
-      var index = 0;
-      var chunkSize = 30;
-
-      function renderNext() {
-        var frag = document.createDocumentFragment();
-        var end = Math.min(index + chunkSize, items.length);
-        for (; index < end; index++) {
-          frag.appendChild(getElementFn(items[index], index));
-        }
-        containerEl.appendChild(frag);
-
-        if (index < items.length) {
-          if (window.IntersectionObserver) {
-            var sentinel = document.createElement('div');
-            sentinel.style.height = '1px';
-            containerEl.appendChild(sentinel);
-            var observer = new IntersectionObserver(function(entries) {
-              if (entries[0].isIntersecting) {
-                observer.unobserve(sentinel);
-                sentinel.remove();
-                renderNext();
-              }
-            }, { rootMargin: '200px' });
-            observer.observe(sentinel);
-          } else {
-            setTimeout(renderNext, 50);
-          }
-        }
+    function setupVirtualScroll(items, containerEl, scrollParentEl, renderItemFn) {
+      if (containerEl._cleanup) {
+        containerEl._cleanup();
       }
-      if (items.length > 0) renderNext();
+      containerEl.innerHTML = '';
+      if (items.length === 0) return;
+
+      var ITEM_HEIGHT = 55;
+      var spacer = document.createElement('div');
+      spacer.style.height = (items.length * ITEM_HEIGHT) + 'px';
+      spacer.style.position = 'relative';
+      containerEl.appendChild(spacer);
+
+      var visibleNodes = {};
+      var ticking = false;
+
+      function update() {
+        if (ticking) return;
+        ticking = true;
+        window.requestAnimationFrame(function() {
+          var scrollTop = scrollParentEl.scrollTop;
+          var buffer = 15;
+          var startIndex = Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - buffer);
+          var endIndex = Math.min(items.length - 1, startIndex + Math.ceil(scrollParentEl.clientHeight / ITEM_HEIGHT) + buffer * 2);
+
+          for (var idx in visibleNodes) {
+            if (idx < startIndex || idx > endIndex) {
+              spacer.removeChild(visibleNodes[idx]);
+              delete visibleNodes[idx];
+            }
+          }
+
+          for (var i = startIndex; i <= endIndex; i++) {
+            if (!visibleNodes[i]) {
+              var node = renderItemFn(items[i], i);
+              node.style.position = 'absolute';
+              node.style.top = (i * ITEM_HEIGHT) + 'px';
+              node.style.left = '0';
+              node.style.right = '0';
+              spacer.appendChild(node);
+              visibleNodes[i] = node;
+            }
+          }
+          ticking = false;
+        });
+      }
+
+      scrollParentEl.addEventListener('scroll', update, { passive: true });
+      update();
+
+      containerEl._cleanup = function() {
+        scrollParentEl.removeEventListener('scroll', update);
+        containerEl._cleanup = null;
+      };
     }
 
     function getSongById(id) {
@@ -900,10 +940,11 @@
           if (currentSongs.length === 0) {
             songList.innerHTML = '<p style="color: var(--secondary-text);">曲がありません。設定から追加してね。</p>';
           } else {
-            renderListInChunks(currentSongs, songList, function(song) {
+            setupVirtualScroll(currentSongs, songList, document.getElementById('library'), function(song) {
               var div = document.createElement('div');
               div.className = 'song-item';
               var nameSpan = document.createElement('span');
+              nameSpan.className = 'song-name';
               nameSpan.textContent = song.name;
               div.appendChild(nameSpan);
               let globalIndex = currentSongs.indexOf(song);
@@ -943,17 +984,17 @@
       container.innerHTML = '';
       
       if(currentSongs.length === 0) {
-        container.innerHTML = '<p style="color: var(--secondary-text);">消せる曲がないよ。</p>';
+        container.innerHTML = '<p style="color: var(--secondary-text); padding: 0 20px;">消せる曲がないよ。</p>';
         return;
       }
       
-      renderListInChunks(currentSongs, container, function(song) {
+      setupVirtualScroll(currentSongs, container, document.getElementById('deleteScreen'), function(song) {
         var div = document.createElement('div');
         div.className = 'song-item';
         var label = document.createElement('label');
         label.style.display = 'flex'; label.style.alignItems = 'center'; label.style.width = '100%'; label.style.cursor = 'pointer';
         var cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'song-checkbox'; cb.value = song.id;
-        var nameSpan = document.createElement('span'); nameSpan.textContent = song.name;
+        var nameSpan = document.createElement('span'); nameSpan.className = 'song-name'; nameSpan.textContent = song.name;
         label.appendChild(cb); label.appendChild(nameSpan); div.appendChild(label);
         return div;
       });
@@ -979,7 +1020,7 @@
       }
       appTags.forEach(function(tag) {
         var div = document.createElement('div'); div.className = 'song-item';
-        var nameSpan = document.createElement('span'); nameSpan.textContent = tag; div.appendChild(nameSpan);
+        var nameSpan = document.createElement('span'); nameSpan.className = 'song-name'; nameSpan.textContent = tag; div.appendChild(nameSpan);
         var arrowSpan = document.createElement('span'); arrowSpan.style.color = 'var(--secondary-text)'; arrowSpan.textContent = '＞'; div.appendChild(arrowSpan);
         div.addEventListener('click', function() { showPlaylistSongs(tag); });
         listContainer.appendChild(div);
@@ -999,10 +1040,11 @@
         return;
       }
       
-      renderListInChunks(matches, songListContainer, function(song) {
+      setupVirtualScroll(matches, songListContainer, document.getElementById('playlist'), function(song) {
         var div = document.createElement('div');
         div.className = 'song-item';
         var nameSpan = document.createElement('span');
+        nameSpan.className = 'song-name';
         nameSpan.textContent = song.name;
         div.appendChild(nameSpan);
         let globalIndex = currentSongs.indexOf(song);
@@ -1140,6 +1182,18 @@
       }
       var prevIdx = (currentIndex - 1 + currentSongs.length) % currentSongs.length;
 
+      // 古い曲の再生を止めてメモリを解放する処理
+      if (!audioPlayer.paused) {
+        audioPlayer.pause();
+      }
+      audioPlayer.removeAttribute('src');
+      audioPlayer.load(); // iOSのオーディオバッファを強制クリア
+      if (currentAudioUrl) {
+        URL.revokeObjectURL(currentAudioUrl);
+        currentAudioUrl = null;
+      }
+      updatePlayPauseIcon(false);
+
       nowPlaying.textContent = songMeta.name;
       nowPlaying.style.animation = 'none';
       nowPlaying.style.transform = 'translateX(0)';
@@ -1159,72 +1213,85 @@
       var cardPrev = document.getElementById('artworkCardPrev');
       var bgEl = document.getElementById('playerBg');
       
+      // 連続スワイプ中は間違った画像が出ないように一旦クリア
       loadCardArtwork(null, card0);
       loadCardArtwork(null, card1);
       loadCardArtwork(null, card2);
       loadCardArtwork(null, cardPrev);
+      bgEl.style.opacity = 0;
 
-      var p0 = getSongById(songMeta.id);
-      var p1 = getSongById(currentSongs[nextIndex1].id);
-      var p2 = getSongById(currentSongs[nextIndex2].id);
-      var pPrev = getSongById(currentSongs[prevIdx].id);
-
-      Promise.all([p0, p1, p2, pPrev]).then(function(results) {
-        var playingFull = results[0];
-        loadCardArtwork(playingFull, card0);
-        
-        if (isBgArtworkEnabled && playingFull && playingFull.artwork) {
-          bgEl.style.backgroundImage = 'url(' + playingFull.artwork + ')';
-          bgEl.style.opacity = 1;
-        } else {
-          bgEl.style.opacity = 0;
-        }
-
-        if (currentSongs.length > 1) {
-          loadCardArtwork(results[1], card1);
-          loadCardArtwork(results[2], card2);
-          loadCardArtwork(results[3], cardPrev);
-        } else {
-          loadCardArtwork(playingFull, card1);
-          loadCardArtwork(playingFull, card2);
-          loadCardArtwork(playingFull, cardPrev);
-        }
-      });
-      
       resetCardPositions();
       updatePlayerTags();
 
       document.getElementById('loadingDots').classList.add('active');
 
-      p0.then(function(song) {
-        if(!song) {
-          document.getElementById('loadingDots').classList.remove('active');
-          return;
-        }
-        var blob = new Blob([song.data], { type: song.type });
-        if(currentAudioUrl) {
-          URL.revokeObjectURL(currentAudioUrl);
-        }
-        currentAudioUrl = URL.createObjectURL(blob);
-        audioPlayer.src = currentAudioUrl;
+      // スワイプが連続している時はデータの読み込みをキャンセルして待つ
+      if (playDebounceTimer) clearTimeout(playDebounceTimer);
+      currentPlayId++;
+      var myPlayId = currentPlayId;
 
-        var playPromise = audioPlayer.play();
-        if (playPromise !== undefined) {
-          playPromise.then(function() {
-            finishLoad();
-          }).catch(function(error) {
-            finishLoad();
-          });
-        } else {
-          finishLoad();
-        }
+      playDebounceTimer = setTimeout(function() {
+        if (myPlayId !== currentPlayId) return; // 別の曲にスワイプされていたら中止
 
-        function finishLoad() {
-          document.getElementById('loadingDots').classList.remove('active');
-          updatePlayPauseIcon(true);
-          switchTab(null, 'player');
-        }
-      });
+        var p0 = getSongById(songMeta.id);
+        var p1 = getSongById(currentSongs[nextIndex1].id);
+        var p2 = getSongById(currentSongs[nextIndex2].id);
+        var pPrev = getSongById(currentSongs[prevIdx].id);
+
+        Promise.all([p0, p1, p2, pPrev]).then(function(results) {
+          if (myPlayId !== currentPlayId) return;
+          var playingFull = results[0];
+          loadCardArtwork(playingFull, card0);
+          
+          if (isBgArtworkEnabled && playingFull && playingFull.artwork) {
+            bgEl.style.backgroundImage = 'url(' + playingFull.artwork + ')';
+            bgEl.style.opacity = 1;
+          } else {
+            bgEl.style.opacity = 0;
+          }
+
+          if (currentSongs.length > 1) {
+            loadCardArtwork(results[1], card1);
+            loadCardArtwork(results[2], card2);
+            loadCardArtwork(results[3], cardPrev);
+          } else {
+            loadCardArtwork(playingFull, card1);
+            loadCardArtwork(playingFull, card2);
+            loadCardArtwork(playingFull, cardPrev);
+          }
+        });
+
+        p0.then(function(song) {
+          if (myPlayId !== currentPlayId) return;
+          if(!song) {
+            document.getElementById('loadingDots').classList.remove('active');
+            return;
+          }
+          var blob = new Blob([song.data], { type: song.type });
+          if(currentAudioUrl) {
+            URL.revokeObjectURL(currentAudioUrl);
+          }
+          currentAudioUrl = URL.createObjectURL(blob);
+          audioPlayer.src = currentAudioUrl;
+
+          var playPromise = audioPlayer.play();
+          if (playPromise !== undefined) {
+            playPromise.then(function() {
+              if (myPlayId === currentPlayId) finishLoad();
+            }).catch(function(error) {
+              if (myPlayId === currentPlayId) finishLoad();
+            });
+          } else {
+            finishLoad();
+          }
+
+          function finishLoad() {
+            document.getElementById('loadingDots').classList.remove('active');
+            updatePlayPauseIcon(true);
+            switchTab(null, 'player');
+          }
+        });
+      }, 350); // 0.35秒の遅延処理
     }
 
     function togglePlay() {
